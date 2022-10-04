@@ -17,8 +17,7 @@ import pytest
 
 from merlin.dag import BaseOperator
 from merlin.dag.node import Node
-from merlin.dag.ops.selection import SelectionOp
-from merlin.dag.selector import ColumnSelector
+from merlin.dag.ops.selector import ColumnSelector
 from merlin.schema import ColumnSchema, Schema, Tags
 
 
@@ -153,7 +152,7 @@ def test_rshift_operator_onto_selector_creates_selection_node():
     assert len(output_node.parents) == 1
 
     assert isinstance(output_node.parents[0], Node)
-    assert isinstance(output_node.parents[0].op, SelectionOp)
+    assert isinstance(output_node.parents[0].op, ColumnSelector)
     assert output_node.parents[0]._selector == selector
     assert len(output_node.parents[0].parents) == 0
 

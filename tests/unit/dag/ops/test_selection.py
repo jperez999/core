@@ -15,15 +15,13 @@
 #
 import pytest
 
-from merlin.dag import ColumnSelector
-from merlin.dag.ops.selection import SelectionOp
+from merlin.dag.ops.selector import ColumnSelector
 from merlin.schema import ColumnSchema, Schema
 
 
 @pytest.mark.parametrize("engine", ["parquet"])
 def test_selection_transform(df):
-    selector = ColumnSelector(["x", "y"])
-    op = SelectionOp(selector)
+    op = ColumnSelector(["x", "y"])
 
     result_df = op.transform(ColumnSelector(), df)
 
@@ -34,8 +32,7 @@ def test_selection_transform(df):
 def test_selection_output_column_names(df):
     selector = ColumnSelector(["x", "y"])
 
-    op = SelectionOp(selector)
-    result_selector = op.output_column_names(selector)
+    result_selector = selector.output_column_names(selector)
 
     assert result_selector.names == ["x", "y"]
 
@@ -44,8 +41,7 @@ def test_selection_output_column_names(df):
 def test_selection_output_schema(df):
     selector = ColumnSelector(["x", "y"])
     schema = Schema([ColumnSchema(col) for col in df.columns])
-    op = SelectionOp(selector)
 
-    result_schema = op.compute_output_schema(schema, ColumnSelector())
+    result_schema = selector.compute_output_schema(schema)
 
     assert result_schema.column_names == ["x", "y"]

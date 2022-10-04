@@ -271,63 +271,6 @@ class Schema:
     def column_names(self):
         return list(self.column_schemas.keys())
 
-    def select(self, selector) -> "Schema":
-        """Select matching columns from this Schema object using a ColumnSelector
-
-        Parameters
-        ----------
-        selector : ColumnSelector
-            Selector that describes which columns match
-
-        Returns
-        -------
-        Schema
-            New object containing only the ColumnSchemas of selected columns
-
-        """
-        if selector is not None:
-            if selector.all:
-                return self
-
-            schema = Schema()
-            if selector.names:
-                schema += self.select_by_name(selector.names)
-            if selector.tags:
-                schema += self.select_by_tag(selector.tags)
-            return schema
-        return self
-
-    def apply(self, selector) -> "Schema":
-        return self.select(selector)
-
-    def excluding(self, selector) -> "Schema":
-        """Select non-matching columns from this Schema object using a ColumnSelector
-
-        Parameters
-        ----------
-        selector : ColumnSelector
-            Selector that describes which columns match
-
-        Returns
-        -------
-        Schema
-            New object containing only the ColumnSchemas of selected columns
-
-        """
-        schema = self
-        if selector is not None:
-            if selector.all:
-                return Schema()
-            if selector.names:
-                schema = schema.excluding_by_name(selector.names)
-            if selector.tags:
-                schema = schema.excluding_by_tag(selector.tags)
-
-        return schema
-
-    def apply_inverse(self, selector) -> "Schema":
-        return self.excluding(selector)
-
     def select_by_tag(self, tags: Union[Union[str, Tags], List[Union[str, Tags]]]) -> "Schema":
         """Select matching columns from this Schema object using a list of tags
 

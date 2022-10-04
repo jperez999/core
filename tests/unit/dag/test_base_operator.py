@@ -17,7 +17,7 @@ import pytest
 
 from merlin.dag.base_operator import BaseOperator as Operator
 from merlin.dag.graph import Graph
-from merlin.dag.selector import ColumnSelector
+from merlin.dag.ops.selector import ColumnSelector
 from merlin.schema import Schema
 
 
@@ -70,9 +70,9 @@ def test_compute_input_schema_validates_schemas(dataset, engine):
 def test_compute_output_schema_validates_schemas(dataset, engine):
     op = Operator()
     schema = Schema(["a", "b"])
-    selector = ColumnSelector(["c"])
+    # selector = ColumnSelector(["c"])
 
     with pytest.raises(ValueError) as exc_info:
-        op.compute_output_schema(schema, selector)
+        op.compute_output_schema(schema)
 
     assert "Missing column" in str(exc_info.value)

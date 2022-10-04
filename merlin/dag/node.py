@@ -17,8 +17,8 @@ import collections.abc
 from typing import List, Union
 
 from merlin.dag.base_operator import BaseOperator
-from merlin.dag.ops import ConcatColumns, SelectionOp, SubsetColumns, SubtractionOp
-from merlin.dag.selector import ColumnSelector
+from merlin.dag.ops import ConcatColumns, SubtractionOp
+from merlin.dag.ops.selector import ColumnSelector
 from merlin.schema import Schema
 
 
@@ -30,64 +30,26 @@ class Node:
 
     Parameters
     ----------
-    selector: ColumnSelector
+    op: Operator
         Defines which columns to select from the input Dataset using column names and tags.
     """
 
-    def __init__(self, selector=None):
+    def __init__(self, op=None):
         self.parents = []
         self.children = []
-        self.dependencies = []
 
-        self.op = None
-        self.input_schema = None
+        dependencies = op.dependencies()
+        if dependencies:
+            if not isinstance(dependencies, collections.abc.Sequence):
+                dependencies = [dependencies]
+
+        for dependency in dependencies:
+            self.add_parent(dependency)
+
+        self.op = op
+
+        self.input_schema = None  # TODO: do we need an input_schema still ?
         self.output_schema = None
-
-        if isinstance(selector, list):
-            selector = ColumnSelector(selector)
-
-        if selector and not isinstance(selector, ColumnSelector):
-            raise TypeError("The selector argument must be a list or a ColumnSelector")
-
-        if selector is not None:
-            self.op = SelectionOp(selector)
-
-        self.selector = selector
-
-    @property
-    def selector(self):
-        return self._selector
-
-    @selector.setter
-    def selector(self, sel):
-        if isinstance(sel, list):
-            sel = ColumnSelector(sel)
-
-        self._selector = sel
-
-    # These methods must maintain grouping
-    def add_dependency(
-        self, dep: Union[str, ColumnSelector, "Node", List[Union[str, "Node", ColumnSelector]]]
-    ):
-        """
-        Adding a dependency node to this node
-
-        Parameters
-        ----------
-        dep : Union[str, ColumnSelector, Node, List[Union[str, Node, ColumnSelector]]]
-            Dependency to be added
-        """
-        dep_node = Node.construct_from(dep)
-
-        if not isinstance(dep_node, list):
-            dep_nodes = [dep_node]
-        else:
-            dep_nodes = dep_node
-
-        for node in dep_nodes:
-            node.children.append(self)
-
-        self.dependencies.append(dep_node)
 
     def add_parent(
         self, parent: Union[str, ColumnSelector, "Node", List[Union[str, "Node", ColumnSelector]]]
@@ -164,71 +126,12 @@ class Node:
         preserve_dtypes : bool, optional
             `True` if we don't want to override dtypes in the current schema, by default False
         """
-        parents_schema = _combine_schemas(self.parents)
-        deps_schema = _combine_schemas(self.dependencies)
-        parents_selector = _combine_selectors(self.parents)
-        dependencies_selector = _combine_selectors(self.dependencies)
+        if self.parents:
+            self.input_schema = _combine_schemas(self.parents)
+        else:
+            self.input_schema = root_schema
 
-        # If parent is an addition or selection node, we may need to
-        # propagate grouping unless this node already has a selector
-        if len(self.parents) == 1 and isinstance(self.parents[0].op, (ConcatColumns, SelectionOp)):
-            parents_selector = self.parents[0].selector
-            if not self.selector and self.parents[0].selector and (self.parents[0].selector.names):
-                self.selector = parents_selector
-
-        self.input_schema = self.op.compute_input_schema(
-            root_schema, parents_schema, deps_schema, self.selector
-        )
-
-        self.selector = self.op.compute_selector(
-            self.input_schema, self.selector, parents_selector, dependencies_selector
-        )
-
-        prev_output_schema = self.output_schema if preserve_dtypes else None
-        self.output_schema = self.op.compute_output_schema(
-            self.input_schema, self.selector, prev_output_schema
-        )
-
-    def validate_schemas(self, root_schema: Schema, strict_dtypes: bool = False):
-        """
-        Check if this Node's input schema matches the output schemas of parents and dependencies
-
-        Parameters
-        ----------
-        root_schema : Schema
-            Schema of the input dataset
-        strict_dtypes : bool, optional
-            If an error should be raised when column dtypes don't match, by default False
-
-        Raises
-        ------
-        ValueError
-            If parents and dependencies don't provide an expected column based on
-            the input schema
-        ValueError
-            If the dtype of a column from parents and dependencies doesn't match
-            the expected dtype based on the input schema
-        """
-        parents_schema = _combine_schemas(self.parents)
-        deps_schema = _combine_schemas(self.dependencies)
-        ancestors_schema = root_schema + parents_schema + deps_schema
-
-        for col_name, col_schema in self.input_schema.column_schemas.items():
-            source_col_schema = ancestors_schema.get(col_name)
-
-            if not source_col_schema:
-                raise ValueError(
-                    f"Missing column '{col_name}' at the input to '{self.op.__class__.__name__}'."
-                )
-
-            if strict_dtypes or not self.op.dynamic_dtypes:
-                if source_col_schema.dtype != col_schema.dtype:
-                    raise ValueError(
-                        f"Mismatched dtypes for column '{col_name}' provided to "
-                        f"'{self.op.__class__.__name__}': "
-                        f"ancestor nodes provided dtype '{source_col_schema.dtype}', "
-                        f"expected dtype '{col_schema.dtype}'."
-                    )
+        self.output_schema = self.op.compute_output_schema(self.input_schema)
 
     def __rshift__(self, operator):
         """Transforms this Node by applying an BaseOperator
@@ -248,18 +151,8 @@ class Node:
         if not isinstance(operator, BaseOperator):
             raise ValueError(f"Expected operator or callable, got {operator.__class__}")
 
-        child = type(self)()
-        child.op = operator
+        child = type(self)(operator)
         child.add_parent(self)
-
-        dependencies = operator.dependencies
-
-        if dependencies:
-            if not isinstance(dependencies, collections.abc.Sequence):
-                dependencies = [dependencies]
-
-            for dependency in dependencies:
-                child.add_dependency(dependency)
 
         return child
 
@@ -278,8 +171,7 @@ class Node:
             child = self
         else:
             # Create a child node
-            child = type(self)()
-            child.op = ConcatColumns(label="+")
+            child = type(self)(ConcatColumns())
             child.add_parent(self)
 
         # The right operand becomes a dependency
@@ -291,9 +183,9 @@ class Node:
             # avoid creating a cascade of repeated `+`s that we'd need to optimize out by
             # re-combining them later in order to clean up the graph
             if not isinstance(other_node, list) and isinstance(other_node.op, ConcatColumns):
-                child.dependencies += other_node.grouped_parents_with_dependencies
+                child.parents.extend(other_node.parents)
             else:
-                child.add_dependency(other_node)
+                child.add_parent(other_node)
 
         return child
 
@@ -317,38 +209,8 @@ class Node:
         if not isinstance(other_nodes, list):
             other_nodes = [other_nodes]
 
-        child = type(self)()
+        child = type(self)(SubtractionOp(other_nodes))
         child.add_parent(self)
-        child.op = SubtractionOp()
-
-        for other_node in other_nodes:
-            if isinstance(other_node.op, SelectionOp) and not other_node.parents_with_dependencies:
-                child.selector += other_node.selector
-                child.op.selector += child.selector
-            else:
-                child.add_dependency(other_node)
-
-        return child
-
-    def __rsub__(self, other):
-        left_operand = Node.construct_from(other)
-        right_operand = self
-
-        if not isinstance(left_operand, list):
-            left_operand = [left_operand]
-
-        child = type(self)()
-        child.add_parent(left_operand)
-        child.op = SubtractionOp()
-
-        if (
-            isinstance(right_operand.op, SelectionOp)
-            and not right_operand.parents_with_dependencies
-        ):
-            child.selector += right_operand.selector
-            child.op.selector += child.selector
-        else:
-            child.add_dependency(right_operand)
 
         return child
 
@@ -368,7 +230,6 @@ class Node:
         col_selector = ColumnSelector(columns)
         child = type(self)(col_selector)
         columns = [columns] if not isinstance(columns, list) else columns
-        child.op = SubsetColumns(label=str(list(columns)))
         child.add_parent(self)
         return child
 
@@ -377,52 +238,17 @@ class Node:
         return f"<Node {self.label}{output}>"
 
     def remove_inputs(self, input_cols):
+        # TODO: this probably won't work ?? (self.column_mapping logic)
         removed_outputs = _derived_output_cols(input_cols, self.column_mapping)
 
         self.input_schema = self.input_schema.without(input_cols)
         self.output_schema = self.output_schema.without(removed_outputs)
-
-        if self.selector:
-            self.selector = self.selector.filter_columns(ColumnSelector(input_cols))
 
         return removed_outputs
 
     @property
     def exportable(self):
         return hasattr(self.op, "export")
-
-    @property
-    def parents_with_dependencies(self):
-        nodes = []
-        for node in self.parents + self.dependencies:
-            if isinstance(node, list):
-                nodes.extend(node)
-            else:
-                nodes.append(node)
-
-        return nodes
-
-    @property
-    def grouped_parents_with_dependencies(self):
-        return self.parents + self.dependencies
-
-    @property
-    def input_columns(self):
-        if self.input_schema is None:
-            raise RuntimeError(
-                "The input columns aren't computed until the workflow "
-                "is fit to a dataset or input schema."
-            )
-
-        if (
-            self.selector
-            and not self.selector.tags
-            and all(not selector.tags for selector in self.selector.subgroups)
-        ):
-            # To maintain column groupings
-            return self.selector
-        else:
-            return ColumnSelector(self.input_schema.column_names)
 
     @property
     def output_columns(self):
@@ -432,16 +258,11 @@ class Node:
                 "is fit to a dataset or input schema."
             )
 
-        return ColumnSelector(self.output_schema.column_names)
+        return self.output_schema.column_names
 
     @property
     def column_mapping(self):
-        selector = self.selector or ColumnSelector(self.input_schema.column_names)
-        return self.op.column_mapping(selector)
-
-    @property
-    def dependency_columns(self):
-        return ColumnSelector(_combine_schemas(self.dependencies).column_names)
+        return self.op.column_mapping(self.input_schema)
 
     @property
     def label(self):
@@ -456,17 +277,10 @@ class Node:
 
     @property
     def _cols_repr(self):
-        if self.input_schema:
-            columns = self.input_schema.column_names
-        elif self.selector:
-            columns = self.selector.names
-        else:
-            columns = []
-
+        columns = self.input_schema.column_names
         cols_repr = ", ".join(map(str, columns[:3]))
         if len(columns) > 3:
             cols_repr += "..."
-
         return cols_repr
 
     @property
@@ -482,17 +296,8 @@ class Node:
         elif isinstance(nodable, Node):
             return nodable
         elif isinstance(nodable, list):
-            if all(isinstance(elem, str) for elem in nodable):
-                return Node(nodable)
-            else:
-                nodes = [Node.construct_from(node) for node in nodable]
-                non_selection_nodes = [node for node in nodes if not node.selector]
-                selection_nodes = [node.selector for node in nodes if node.selector]
-                selection_nodes = (
-                    [Node(_combine_selectors(selection_nodes))] if selection_nodes else []
-                )
-                return non_selection_nodes + selection_nodes
-
+            # TODO: is this right ?
+            return Node(ColumnSelector(nodable))
         else:
             raise TypeError(
                 "Unsupported type: Cannot convert object " f"of type {type(nodable)} to Node."
@@ -507,7 +312,7 @@ def iter_nodes(nodes):
             queue.extend(current)
         else:
             yield current
-            for node in current.parents_with_dependencies:
+            for node in current.parents:
                 if node not in queue:
                     queue.append(node)
 
@@ -527,7 +332,7 @@ def preorder_iter_nodes(nodes):
             queue.append(node)
 
         for node in current_nodes:
-            traverse(node.parents_with_dependencies)
+            traverse(node.parents)
 
     traverse(nodes)
     for node in queue:
@@ -542,7 +347,7 @@ def postorder_iter_nodes(nodes):
 
     def traverse(current_nodes):
         for node in current_nodes:
-            traverse(node.parents_with_dependencies)
+            traverse(node.parents)
             if node not in queue:
                 queue.append(node)
 
@@ -551,63 +356,14 @@ def postorder_iter_nodes(nodes):
         yield node
 
 
-def _filter_by_type(elements, type_):
-    results = []
-
-    for elem in elements:
-        if isinstance(elem, type_):
-            results.append(elem)
-        elif isinstance(elem, list):
-            results += _filter_by_type(elem, type_)
-
-    return results
-
-
 def _combine_schemas(elements):
     combined = Schema()
     for elem in elements:
         if isinstance(elem, Node):
             combined += elem.output_schema
-        elif isinstance(elem, ColumnSelector):
-            combined += Schema(elem.names)
         elif isinstance(elem, list):
             combined += _combine_schemas(elem)
     return combined
-
-
-def _combine_selectors(elements):
-    combined = ColumnSelector()
-    for elem in elements:
-        if isinstance(elem, Node):
-            if elem.selector:
-                selector = elem.op.output_column_names(elem.selector)
-            elif elem.output_schema:
-                selector = ColumnSelector(elem.output_schema.column_names)
-            elif elem.input_schema:
-                selector = ColumnSelector(elem.input_schema.column_names)
-                selector = elem.op.output_column_names(selector)
-            else:
-                selector = ColumnSelector()
-
-            combined += selector
-        elif isinstance(elem, ColumnSelector):
-            combined += elem
-        elif isinstance(elem, str):
-            combined += ColumnSelector(elem)
-        elif isinstance(elem, list):
-            combined += ColumnSelector(subgroups=_combine_selectors(elem))
-    return combined
-
-
-def _to_selector(value):
-    if not isinstance(value, (ColumnSelector, Node)):
-        return ColumnSelector(value)
-    else:
-        return value
-
-
-def _strs_to_selectors(elements):
-    return [_to_selector(elem) for elem in elements]
 
 
 def _to_graphviz(output_node):
@@ -622,7 +378,7 @@ def _to_graphviz(output_node):
     node_ids = {v: str(k) for k, v in enumerate(allnodes)}
     for node, nodeid in node_ids.items():
         graph.node(nodeid, node.label)
-        for parent in node.parents_with_dependencies:
+        for parent in node.parents:
             graph.edge(node_ids[parent], nodeid)
 
         if node.selector and node.selector.names:
@@ -638,15 +394,6 @@ def _to_graphviz(output_node):
     graph.node(final_node_id, final_string)
     graph.edge(node_ids[output_node], final_node_id)
     return graph
-
-
-def _convert_col(col):
-    if isinstance(col, (str, tuple)):
-        return col
-    elif isinstance(col, list):
-        return tuple(col)
-    else:
-        raise ValueError(f"Invalid column value for Node: {col}")
 
 
 def _derived_output_cols(input_cols, column_mapping):

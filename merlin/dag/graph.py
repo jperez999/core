@@ -35,7 +35,7 @@ class Graph:
         self.output_node = output_node
         self.subgraphs = subgraphs or {}
 
-        parents_with_deps = self.output_node.parents_with_dependencies
+        parents_with_deps = self.output_node.parents
         parents_with_deps.append(output_node)
 
         for name, sg in self.subgraphs.items():
@@ -117,7 +117,7 @@ class Graph:
         for node in iter_nodes([self.output_node]):
             upstream_output_cols = []
 
-            for upstream_node in node.parents_with_dependencies:
+            for upstream_node in node.parents:
                 upstream_output_cols += upstream_node.output_columns.names
 
             upstream_output_cols = _get_unique(upstream_output_cols)

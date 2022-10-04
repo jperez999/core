@@ -16,10 +16,11 @@
 from typing import List, Union
 
 import merlin.dag
-from merlin.schema import Tags
+from merlin.dag.base_operator import BaseOperator
+from merlin.schema import Schema, Tags
 
 
-class ColumnSelector:
+class ColumnSelector(BaseOperator):
     """A ColumnSelector describes a group of columns to be transformed by Operators in a
     Graph. Operators can be applied to the selected columns by shifting (>>) operators
     on to the ColumnSelector, which returns a new Node with the transformations
@@ -50,7 +51,7 @@ class ColumnSelector:
         if self.all:
             self._names = []
             self._tags = []
-            self._subgroups = []
+            self._subgroups: List[str] = []
 
         if isinstance(self._names, merlin.dag.Node):
             raise TypeError("ColumnSelectors can not contain Nodes")
@@ -104,31 +105,6 @@ class ColumnSelector:
         for col_sel0 in self.subgroups:
             col_sel0._nested_check(nests=nests + 1)
 
-    def __add__(self, other):
-        if other is None:
-            return self
-        elif isinstance(other, merlin.dag.Node):
-            return other + self
-
-        if self.all:
-            return self
-
-        if isinstance(other, ColumnSelector):
-            if other.all:
-                return other
-
-            return ColumnSelector(
-                self._names + other._names,
-                self.subgroups + other.subgroups,
-                tags=self._tags + other._tags,
-            )
-        elif isinstance(other, Tags):
-            return ColumnSelector(self._names, self.subgroups, tags=self._tags + [other])
-        else:
-            if isinstance(other, str):
-                other = [other]
-            return ColumnSelector(self._names + other, self.subgroups)
-
     def __radd__(self, other):
         return self + other
 
@@ -137,61 +113,27 @@ class ColumnSelector:
             # handle case where an operator class is passed
             operator = operator()
 
-        return operator.create_node(self) >> operator
+        return merlin.dag.Node(self) >> operator
 
-    def __eq__(self, other):
-        if not isinstance(other, ColumnSelector):
-            return False
-
-        return (other.all and self.all) or (
-            other._names == self._names and other.subgroups == self.subgroups
-        )
-
-    def __bool__(self):
-        return bool(self.all or self._names or self.subgroups or self.tags)
-
-    def resolve(self, schema):
-        """Takes a schema and produces a new selector with selected column names
-        how selection occurs (tags, name) does not matter."""
-        if self.all:
-            return ColumnSelector(schema.column_names)
-
-        # get names from tags or names
-        root_selector = ColumnSelector(names=self._names, tags=self.tags)
-        new_schema = schema.apply(root_selector)
-        new_selector = ColumnSelector(new_schema.column_names)
-        for group in self.subgroups:
-            new_selector.subgroups.append(group.resolve(schema))
-        return new_selector
-
-    def filter_columns(self, other_selector: "ColumnSelector"):
-        """
-        Narrow the content of this selector to the columns that would be selected by another
+    def compute_output_schema(self, input_schema) -> "Schema":
+        """Select matching columns from this Schema object using a ColumnSelector
 
         Parameters
         ----------
-        other_selector : ColumnSelector
-            Other selector to apply as the filter
+        selector : ColumnSelector
+            Selector that describes which columns match
 
         Returns
         -------
-        ColumnSelector
-            This selector filtered by the other selector
+        Schema
+            New object containing only the ColumnSchemas of selected columns
+
         """
-        remaining_names = []
-        remaining_groups = []
+        schema = Schema()
+        if self.names:
+            schema += input_schema.select_by_name(self.names)
+        if self.tags:
+            schema += input_schema.select_by_tag(self.tags)
 
-        if self.all:
-            return other_selector
-
-        for col in self._names:
-            if col not in other_selector._names:
-                remaining_names.append(col)
-
-        for group in self.subgroups:
-            if group not in other_selector.subgroups and all(
-                col not in other_selector._names for col in group.names
-            ):
-                remaining_groups.append(group)
-
-        return ColumnSelector(remaining_names, subgroups=remaining_groups)
+        # TODO: propagate grouped names into output schema here
+        return schema

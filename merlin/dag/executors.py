@@ -86,13 +86,13 @@ class LocalExecutor:
         addl_input_cols = set(node.dependency_columns.names)
 
         # Build input dataframe
-        if node.parents_with_dependencies:
+        if node.parents:
             # If there are parents, collect their outputs
             # to build the current node's input
             input_df = None
             seen_columns = None
 
-            for parent in node.parents_with_dependencies:
+            for parent in node.parents:
                 parent_output_cols = _get_unique(parent.output_schema.column_names)
                 parent_data = self.transform(df, [parent], capture_dtypes=capture_dtypes)
                 if input_df is None or not len(input_df):
@@ -273,7 +273,7 @@ class DaskExecutor:
             addl_input_cols = set()
             if node.parents:
                 upstream_output_cols = sum(
-                    [upstream.output_columns for upstream in node.parents_with_dependencies],
+                    [upstream.output_columns for upstream in node.parents],
                     ColumnSelector(),
                 )
                 addl_input_cols = set(node.input_columns.names) - set(upstream_output_cols.names)
@@ -282,7 +282,7 @@ class DaskExecutor:
             # the transforms from the statop itself
             transformed_ddf = self.transform(
                 ddf,
-                node.parents_with_dependencies,
+                node.parents,
                 additional_columns=addl_input_cols,
                 capture_dtypes=True,
             )
